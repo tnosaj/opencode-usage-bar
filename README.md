@@ -1,6 +1,6 @@
 # opencode-usage-bar
 
-[npm](https://www.npmjs.com/package/opencode-usage-bar) · [source](https://github.com/satas20/opencode-usage-bar)
+[npm](https://www.npmjs.com/package/@satas/opencode-usage-bar) · [source](https://github.com/satas20/opencode-usage-bar)
 
 An AI subscription usage gauge for the [opencode](https://opencode.ai) TUI.
 
@@ -41,7 +41,7 @@ cld ▓▓▓▓░ 65% · 0h 11m  7d ▓░░░░ 19% · 1d 11h   oai ▓░
 ### Recommended (npm)
 
 ```sh
-opencode plugin opencode-usage-bar
+opencode plugin @satas/opencode-usage-bar
 ```
 
 This installs the package via Bun, detects the TUI entrypoint, and adds it to
@@ -54,7 +54,7 @@ Or add it manually:
 // ~/.config/opencode/tui.json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-usage-bar"]
+  "plugin": ["@satas/opencode-usage-bar"]
 }
 ```
 

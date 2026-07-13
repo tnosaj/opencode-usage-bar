@@ -1,5 +1,5 @@
 {
-  "name": "opencode-usage-bar",
+  "name": "@satas/opencode-usage-bar",
   "version": "0.1.0",
   "description": "AI subscription usage gauge for the opencode TUI (Claude Pro/Max, ChatGPT Plus/Pro) — shows ▓▓▓░░░ 36% · 0h 39m below the footer.",
   "type": "module",

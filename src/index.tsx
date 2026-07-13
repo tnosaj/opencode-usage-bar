@@ -16,7 +16,7 @@
  * only ever sent to their own provider's API host.
  *
  * Loaded via tui.json, e.g.:
- *   { "plugin": ["opencode-usage-bar"] }             // published npm package
+ *   { "plugin": ["@satas/opencode-usage-bar"] }      // published npm package
  *   { "plugin": ["/abs/path/to/src/index.tsx"] }     // local file (no build)
  */
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
