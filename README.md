@@ -150,6 +150,13 @@ automatically).
 - opencode >= 1.17 (TUI plugin API, `@opencode-ai/plugin/tui`)
 - Bun runtime (used by opencode; `Bun.TOML` parses the config)
 
+## Contributing
+
+Contributions welcome — especially new providers (see the checklist in
+[CONTRIBUTING.md](CONTRIBUTING.md)). The whole plugin is a single file, and
+opencode transpiles `.tsx` on the fly, so you can hack on it with no build
+step.
+
 ## License
 
 MIT

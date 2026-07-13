@@ -125,13 +125,14 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
 }
 
 /** Fetch a vendor's overall status from its public Statuspage JSON endpoint.
- *  Returns the `indicator` ("none" when healthy) or "none" on any failure so
- *  the caller never has to handle a thrown error. */
-async function fetchStatus(url: string): Promise<StatusIndicator> {
+ *  Returns the `indicator` ("none" when healthy), or `null` when the fetch
+ *  itself failed — so a network blip never clears a known incident. */
+async function fetchStatus(url: string): Promise<StatusIndicator | null> {
   const data = (await fetchJson(url, {})) as {
     status?: { indicator?: string }
   } | null
-  const indicator = data?.status?.indicator
+  if (!data?.status) return null
+  const indicator = data.status.indicator
   return indicator === "minor" ||
     indicator === "major" ||
     indicator === "critical" ||
@@ -218,7 +219,8 @@ const anthropicProvider: Provider = {
 
     const windows: UsageWindow[] = []
     for (const limit of data.limits) {
-      if (!limit || typeof limit.percent !== "number" || !limit.kind || !limit.resets_at) continue
+      if (!limit || typeof limit.percent !== "number" || !Number.isFinite(limit.percent)) continue
+      if (!limit.kind || !limit.resets_at) continue
       const resetsAt = Date.parse(limit.resets_at)
       if (Number.isNaN(resetsAt)) continue
       const category: WindowCategory =
@@ -304,12 +306,12 @@ function parseWhamWindow(
   w: WhamWindow | null | undefined,
   fallback: WindowCategory,
 ): UsageWindow | null {
-  if (!w || typeof w.used_percent !== "number") return null
+  if (!w || typeof w.used_percent !== "number" || !Number.isFinite(w.used_percent)) return null
   let resetsAt: number | undefined
   if (typeof w.reset_at === "number") resetsAt = w.reset_at * 1000
   else if (typeof w.reset_after_seconds === "number")
     resetsAt = Date.now() + w.reset_after_seconds * 1000
-  if (!resetsAt) return null
+  if (!resetsAt || !Number.isFinite(resetsAt)) return null
   const category: WindowCategory =
     typeof w.limit_window_seconds === "number" && w.limit_window_seconds > 0
       ? w.limit_window_seconds <= 21_600 // ≤ 6h → session window
@@ -387,8 +389,9 @@ function parseConfig(raw: string): UsageBarConfig {
   const ui = asTable(root["ui"])
   cfg.showBars = bool(ui["show_bars"], cfg.showBars)
   cfg.showStatus = bool(ui["show_status"], cfg.showStatus)
-  if (typeof ui["bar_width"] === "number" && ui["bar_width"] >= 1)
-    cfg.barWidth = Math.floor(ui["bar_width"])
+  const rawWidth = ui["bar_width"]
+  if (typeof rawWidth === "number" && Number.isFinite(rawWidth) && rawWidth >= 1)
+    cfg.barWidth = Math.min(40, Math.floor(rawWidth))
 
   for (const id of ["anthropic", "openai"] as ProviderId[]) {
     const t = asTable(root[id])
@@ -444,22 +447,17 @@ const tui: TuiPlugin = async (api) => {
   if (api.state.path?.state) opencodeAuthFile = join(api.state.path.state, "auth.json")
 
   const enabled = providers.filter((p) => config.providers[p.id].enabled)
+  if (enabled.length === 0) return // nothing to poll or render
 
   const seed: Record<string, UsageWindow[]> = {}
-  const seedStatus: Record<string, StatusIndicator> = {}
   for (const p of enabled) {
     const cached = api.kv.get<UsageWindow[] | undefined>(`usage-bar.${p.id}.windows`, undefined)
     if (cached) seed[p.id] = cached
-    if (p.statusUrl) {
-      const cachedStatus = api.kv.get<StatusIndicator | undefined>(
-        `usage-bar.${p.id}.status`,
-        undefined,
-      )
-      if (cachedStatus) seedStatus[p.id] = cachedStatus
-    }
   }
   const [byProvider, setByProvider] = createSignal<Record<string, UsageWindow[]>>(seed)
-  const [byStatus, setByStatus] = createSignal<Record<string, StatusIndicator>>(seedStatus)
+  // Status is deliberately not cached across restarts: incidents are
+  // short-lived, and the first poll lands seconds after startup anyway.
+  const [byStatus, setByStatus] = createSignal<Record<string, StatusIndicator>>({})
   const [now, setNow] = createSignal(Date.now())
 
   setInterval(() => setNow(Date.now()), 1_000)
@@ -476,10 +474,8 @@ const tui: TuiPlugin = async (api) => {
         setByProvider((prev) => ({ ...prev, [p.id]: windows }))
         api.kv.set(`usage-bar.${p.id}.windows`, windows)
       }
-      if (status !== null) {
-        setByStatus((prev) => ({ ...prev, [p.id]: status as StatusIndicator }))
-        api.kv.set(`usage-bar.${p.id}.status`, status as StatusIndicator)
-      }
+      // `null` means the status fetch failed — keep the last known indicator.
+      if (status !== null) setByStatus((prev) => ({ ...prev, [p.id]: status }))
       // Back off when the usage fetch failed (e.g. 429 — these endpoints throttle).
       setTimeout(poll, all ? POLL_MS : POLL_MS * 3)
     }
