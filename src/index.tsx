@@ -6,10 +6,16 @@
  *
  *   ▓▓▓▓░░ 65% · 0h 11m                                  (one window)
  *   cld ▓▓▓▓░ 65% · 0h 11m  7d ▓░░░░ 19% · 1d 11h   oai ▓░░░░ 12% · 3h 4m
+ *   ! cld ▓▓▓▓░ 65% · 0h 11m                             (anthropic incident)
  *
  * Providers:
  *   anthropic — Claude Pro/Max via the OAuth token in ~/.claude/.credentials.json
  *   openai    — ChatGPT Plus/Pro via the Codex CLI login in ~/.codex/auth.json
+ *
+ * When a provider's public status page reports an incident, a colored `!`
+ * marker appears next to its prefix (red = major/critical, amber = minor,
+ * cyan = maintenance). The usage bar itself is unaffected. Disable with
+ * `show_status = false` under `[ui]`.
  *
  * Configured via ~/.config/opencode/usage-bar.toml (auto-created with
  * commented defaults on first run; read once at startup). Tokens/keys are
@@ -37,6 +43,9 @@ const CONFIG_FILE = "usage-bar.toml"
 /** Which quota window a value belongs to; toggled per provider in config. */
 type WindowCategory = "5h" | "7d" | "model"
 
+/** Provider health from the vendor's public status page (Statuspage schema). */
+type StatusIndicator = "none" | "minor" | "major" | "critical" | "maintenance"
+
 type UsageWindow = {
   category: WindowCategory
   /** short display label, e.g. "5h", "7d", "Fable" */
@@ -60,6 +69,7 @@ type ProviderConfig = {
 
 type UsageBarConfig = {
   showBars: boolean
+  showStatus: boolean
   barWidth?: number
   providers: Record<ProviderId, ProviderConfig>
 }
@@ -68,6 +78,8 @@ type Provider = {
   id: ProviderId
   /** short prefix shown when multiple providers are visible */
   short: string
+  /** vendor status page JSON endpoint (Statuspage `status.json`); optional */
+  statusUrl?: string
   fetchUsage(cfg: ProviderConfig): Promise<UsageWindow[] | null>
 }
 
@@ -110,6 +122,22 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
   } catch {
     return null
   }
+}
+
+/** Fetch a vendor's overall status from its public Statuspage JSON endpoint.
+ *  Returns the `indicator` ("none" when healthy) or "none" on any failure so
+ *  the caller never has to handle a thrown error. */
+async function fetchStatus(url: string): Promise<StatusIndicator> {
+  const data = (await fetchJson(url, {})) as {
+    status?: { indicator?: string }
+  } | null
+  const indicator = data?.status?.indicator
+  return indicator === "minor" ||
+    indicator === "major" ||
+    indicator === "critical" ||
+    indicator === "maintenance"
+    ? indicator
+    : "none"
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +183,7 @@ async function opencodeAuth(...ids: string[]): Promise<OpencodeAuthEntry | null>
 const anthropicProvider: Provider = {
   id: "anthropic",
   short: "cld",
+  statusUrl: "https://status.anthropic.com/api/v2/status.json",
   async fetchUsage(cfg) {
     let token: string | undefined
     try {
@@ -210,6 +239,7 @@ const anthropicProvider: Provider = {
 const openaiProvider: Provider = {
   id: "openai",
   short: "oai",
+  statusUrl: "https://status.openai.com/api/v2/status.json",
   async fetchUsage(cfg) {
     let accessToken: string | undefined
     let accountId: string | undefined
@@ -300,6 +330,7 @@ const DEFAULT_TOML = `# opencode-usage-bar configuration
 
 [ui]
 show_bars = true      # render ▓▓░░ mini-bars (false = text only)
+show_status = true    # show a ! marker next to a provider during incidents
 # bar_width = 6       # override bar width (default: 6 for a single window, 5 otherwise)
 
 [anthropic]
@@ -325,6 +356,7 @@ function defaultConfig(): UsageBarConfig {
   })
   return {
     showBars: true,
+    showStatus: true,
     providers: {
       anthropic: { enabled: true, show: show() },
       openai: { enabled: false, show: show() },
@@ -354,6 +386,7 @@ function parseConfig(raw: string): UsageBarConfig {
 
   const ui = asTable(root["ui"])
   cfg.showBars = bool(ui["show_bars"], cfg.showBars)
+  cfg.showStatus = bool(ui["show_status"], cfg.showStatus)
   if (typeof ui["bar_width"] === "number" && ui["bar_width"] >= 1)
     cfg.barWidth = Math.floor(ui["bar_width"])
 
@@ -413,11 +446,20 @@ const tui: TuiPlugin = async (api) => {
   const enabled = providers.filter((p) => config.providers[p.id].enabled)
 
   const seed: Record<string, UsageWindow[]> = {}
+  const seedStatus: Record<string, StatusIndicator> = {}
   for (const p of enabled) {
     const cached = api.kv.get<UsageWindow[] | undefined>(`usage-bar.${p.id}.windows`, undefined)
     if (cached) seed[p.id] = cached
+    if (p.statusUrl) {
+      const cachedStatus = api.kv.get<StatusIndicator | undefined>(
+        `usage-bar.${p.id}.status`,
+        undefined,
+      )
+      if (cachedStatus) seedStatus[p.id] = cachedStatus
+    }
   }
   const [byProvider, setByProvider] = createSignal<Record<string, UsageWindow[]>>(seed)
+  const [byStatus, setByStatus] = createSignal<Record<string, StatusIndicator>>(seedStatus)
   const [now, setNow] = createSignal(Date.now())
 
   setInterval(() => setNow(Date.now()), 1_000)
@@ -425,13 +467,20 @@ const tui: TuiPlugin = async (api) => {
   for (const p of enabled) {
     const cfg = config.providers[p.id]
     const poll = async () => {
-      const all = await p.fetchUsage(cfg)
+      // Fetch usage and status concurrently; status pages are CDN-backed and
+      // never throttle, so we poll them on the same cadence as usage.
+      const statusP = config.showStatus && p.statusUrl ? fetchStatus(p.statusUrl) : null
+      const [all, status] = await Promise.all([p.fetchUsage(cfg), statusP])
       if (all) {
         const windows = all.filter((w) => cfg.show[w.category] && w.resetsAt > Date.now())
         setByProvider((prev) => ({ ...prev, [p.id]: windows }))
         api.kv.set(`usage-bar.${p.id}.windows`, windows)
       }
-      // Back off when the fetch failed (e.g. 429 — these endpoints throttle).
+      if (status !== null) {
+        setByStatus((prev) => ({ ...prev, [p.id]: status as StatusIndicator }))
+        api.kv.set(`usage-bar.${p.id}.status`, status as StatusIndicator)
+      }
+      // Back off when the usage fetch failed (e.g. 429 — these endpoints throttle).
       setTimeout(poll, all ? POLL_MS : POLL_MS * 3)
     }
     void poll()
@@ -444,14 +493,16 @@ const tui: TuiPlugin = async (api) => {
       app_bottom() {
         const theme = () => api.theme.current
 
-        type Group = { short: string; windows: UsageWindow[] }
+        type Group = { short: string; status: StatusIndicator; windows: UsageWindow[] }
         const groups = createMemo<Group[]>(() => {
           const map = byProvider()
+          const statusMap = byStatus()
           const out: Group[] = []
           for (const p of enabled) {
             // Drop windows that have reset since the last poll.
             const windows = (map[p.id] ?? []).filter((w) => w.resetsAt > now())
-            if (windows.length > 0) out.push({ short: p.short, windows })
+            if (windows.length > 0)
+              out.push({ short: p.short, status: statusMap[p.id] ?? "none", windows })
           }
           return out
         })
@@ -471,6 +522,14 @@ const tui: TuiPlugin = async (api) => {
           if (pct >= 50) return t.warning
           return t.success
         }
+        // Status marker color: red for severe incidents, amber for minor,
+        // cyan for scheduled maintenance.
+        const statusColor = (s: StatusIndicator) => {
+          const t = theme()
+          if (s === "critical" || s === "major") return t.error
+          if (s === "minor") return t.warning
+          return t.info
+        }
 
         return (
           <Show when={groups().length > 0}>
@@ -478,6 +537,9 @@ const tui: TuiPlugin = async (api) => {
               <For each={groups()}>
                 {(g) => (
                   <box flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
+                    <Show when={config.showStatus && g.status !== "none"}>
+                      <text fg={statusColor(g.status)}>!</text>
+                    </Show>
                     <Show when={multiProvider()}>
                       <text fg={theme().textMuted}>{g.short}</text>
                     </Show>
