@@ -251,8 +251,9 @@ const openaiProvider: Provider = {
         tokens?: { access_token?: string; id_token?: string; account_id?: string }
       }
       const tokens = auth.tokens
-      // Expiry lives in the id_token JWT; skip when (nearly) expired.
-      const exp = tokens?.id_token ? jwtExp(tokens.id_token) : 0
+      // Check the expiry of the token we actually send (the access token);
+      // the id_token expires much earlier and would cause false negatives.
+      const exp = tokens?.access_token ? jwtExp(tokens.access_token) : 0
       if (tokens?.access_token && !(exp > 0 && exp * 1000 <= Date.now() + 60_000)) {
         accessToken = tokens.access_token
         accountId = tokens.account_id
