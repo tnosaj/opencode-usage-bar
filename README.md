@@ -5,9 +5,10 @@
 An AI subscription usage gauge for the [opencode](https://opencode.ai) TUI.
 
 Shows how much of your coding-plan quota you've used and how long until it
-resets, in a full-width row just below the session footer. Supports
-**Claude Pro/Max** and **ChatGPT Plus/Pro (Codex)** — each optional, each
-with per-window toggles.
+resets. Supports **Claude Pro/Max** and **ChatGPT Plus/Pro (Codex)** — each
+optional, each with per-window toggles. Renders as a full-width row below the
+session footer by default, or in the sidebar — see `placement` under
+[Configuration](#configuration).
 
 ```
 ┌─ opencode session ────────────────────────────────────┐
@@ -23,6 +24,16 @@ With multiple windows/providers enabled:
 
 ```
 cld ▓▓▓▓░ 65% · 0h 11m  7d ▓░░░░ 19% · 1d 11h   oai ▓░░░░ 12% · 3h 4m
+```
+
+With `placement = "sidebar_content"`, it appears as its own block in
+opencode's sidebar (shared with the built-in Context/MCP/LSP/Todo/Diff
+sections), stacked one window per line instead of packed into a row:
+
+```
+Usage
+5h ▓░░░░ 15% · 2h 14m
+7d ▓▓▓░░ 68% · 3d 11h
 ```
 
 When a provider's public status page reports an active incident, a colored
@@ -93,6 +104,7 @@ startup.
 show_bars = true      # render ▓▓░░ mini-bars (false = text only)
 show_status = true    # show a ! marker next to a provider during incidents
 # bar_width = 6       # override bar width (default: 6 for a single window, 5 otherwise)
+# placement = "app_bottom"  # app_bottom | sidebar_content | sidebar_footer
 
 [anthropic]
 enabled = true        # Claude Pro/Max via ~/.claude/.credentials.json
@@ -107,6 +119,17 @@ show_5h = true
 show_7d = false
 # codex_auth_path = "~/.codex/auth.json"
 ```
+
+### `placement`
+
+- `app_bottom` (default) — full-width row below the session footer.
+- `sidebar_content` — its own block in the sidebar, alongside opencode's
+  built-in Context/MCP/LSP/Todo/Diff sections (registered at `order: 250`,
+  so it lands after Context/MCP and before LSP). Providers/windows stack one
+  per line to fit the narrower column.
+- `sidebar_footer` — the sidebar's pinned footer strip. Note: that slot is
+  `mode: "single_winner"` and opencode's own footer (share link, version)
+  already occupies it, so this may not render at all.
 
 ## Providers & data sources
 
