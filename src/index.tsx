@@ -67,10 +67,13 @@ type ProviderConfig = {
   codexAuthPath?: string
 }
 
+type Placement = "app_bottom" | "sidebar_content" | "sidebar_footer"
+
 type UsageBarConfig = {
   showBars: boolean
   showStatus: boolean
   barWidth?: number
+  placement: Placement
   providers: Record<ProviderId, ProviderConfig>
 }
 
@@ -335,6 +338,7 @@ const DEFAULT_TOML = `# opencode-usage-bar configuration
 show_bars = true      # render ▓▓░░ mini-bars (false = text only)
 show_status = true    # show a ! marker next to a provider during incidents
 # bar_width = 6       # override bar width (default: 6 for a single window, 5 otherwise)
+# placement = "app_bottom"  # app_bottom | sidebar_content | sidebar_footer
 
 [anthropic]
 enabled = true        # Claude Pro/Max via ~/.claude/.credentials.json
@@ -360,6 +364,7 @@ function defaultConfig(): UsageBarConfig {
   return {
     showBars: true,
     showStatus: true,
+    placement: "app_bottom",
     providers: {
       anthropic: { enabled: true, show: show() },
       openai: { enabled: false, show: show() },
@@ -375,6 +380,14 @@ function asTable(v: unknown): TomlTable {
 
 function bool(v: unknown, fallback: boolean) {
   return typeof v === "boolean" ? v : fallback
+}
+
+const PLACEMENTS: readonly Placement[] = ["app_bottom", "sidebar_content", "sidebar_footer"]
+
+function placement(v: unknown, fallback: Placement): Placement {
+  return typeof v === "string" && (PLACEMENTS as readonly string[]).includes(v)
+    ? (v as Placement)
+    : fallback
 }
 
 function str(v: unknown): string | undefined {
@@ -393,6 +406,7 @@ function parseConfig(raw: string): UsageBarConfig {
   const rawWidth = ui["bar_width"]
   if (typeof rawWidth === "number" && Number.isFinite(rawWidth) && rawWidth >= 1)
     cfg.barWidth = Math.min(40, Math.floor(rawWidth))
+  cfg.placement = placement(ui["placement"], cfg.placement)
 
   for (const id of ["anthropic", "openai"] as ProviderId[]) {
     const t = asTable(root[id])
@@ -483,12 +497,9 @@ const tui: TuiPlugin = async (api) => {
     void poll()
   }
 
-  api.slots.register({
-    order: 60,
-    slots: {
-      // `app_bottom` renders as a full-width row below the session footer.
-      app_bottom() {
-        const theme = () => api.theme.current
+  // Same render regardless of target slot — only where it's mounted differs.
+  function renderBar() {
+    const theme = () => api.theme.current
 
         type Group = { short: string; status: StatusIndicator; windows: UsageWindow[] }
         const groups = createMemo<Group[]>(() => {
@@ -530,15 +541,24 @@ const tui: TuiPlugin = async (api) => {
 
         return (
           <Show when={groups().length > 0}>
-            <box flexDirection="row" gap={3} alignItems="center" width="100%" paddingLeft={1}>
+            <box flexDirection="column" width="100%">
+              <box flexDirection="row" gap={1}>
+                <text fg={theme().text}>
+                  <b>Usage</b>
+                </text>
+              </box>
               <For each={groups()}>
                 {(g) => (
-                  <box flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
-                    <Show when={config.showStatus && g.status !== "none"}>
-                      <text fg={statusColor(g.status)}>!</text>
-                    </Show>
-                    <Show when={multiProvider()}>
-                      <text fg={theme().textMuted}>{g.short}</text>
+                  <box flexDirection="column" flexShrink={0}>
+                    <Show when={(config.showStatus && g.status !== "none") || multiProvider()}>
+                      <box flexDirection="row" gap={1} alignItems="center">
+                        <Show when={config.showStatus && g.status !== "none"}>
+                          <text fg={statusColor(g.status)}>!</text>
+                        </Show>
+                        <Show when={multiProvider()}>
+                          <text fg={theme().textMuted}>{g.short}</text>
+                        </Show>
+                      </box>
                     </Show>
                     <For each={g.windows}>
                       {(w) => (
@@ -565,9 +585,25 @@ const tui: TuiPlugin = async (api) => {
             </box>
           </Show>
         )
-      },
-    },
-  })
+  }
+
+  // Slot props (`session_id`) are unused — the render is identical everywhere,
+  // only its mount point moves. Registered per-case so each matches the real
+  // `TuiHostSlotMap` signature for that slot.
+  //
+  // `sidebar_content` is shared with opencode's own built-in sidebar sections,
+  // which register into it at order: context=100, mcp=200, lsp=300, todo=400,
+  // files=500. 250 lands us after context (and mcp, if configured) and before lsp.
+  switch (config.placement) {
+    case "sidebar_content":
+      api.slots.register({ order: 250, slots: { sidebar_content: renderBar } })
+      break
+    case "sidebar_footer":
+      api.slots.register({ order: 60, slots: { sidebar_footer: renderBar } })
+      break
+    default:
+      api.slots.register({ order: 60, slots: { app_bottom: renderBar } })
+  }
 }
 
 const plugin = { id: "opencode-usage-bar", tui } satisfies TuiPluginModule
