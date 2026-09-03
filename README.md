@@ -92,6 +92,41 @@ straight at the source file:
 }
 ```
 
+### Fork, without publishing to npm
+
+`opencode plugin github:<owner>/<repo>` does **not** work for a fork unless
+it's also published to npm: opencode tries to build it locally via npm's
+git-dependency `prepare` lifecycle, and this repo's `build.ts` calls
+`Bun.build()` — that needs the `bun` binary on the installing machine's
+`$PATH`, which most machines won't have unless they already use Bun for
+other things.
+
+Two ways around it, without publishing your fork anywhere:
+
+1. **Build it yourself once** and point `tui.json` at the output:
+   ```sh
+   bun install && bun run build   # or via Docker: see below
+   ```
+   ```jsonc
+   { "plugin": ["/absolute/path/to/your-fork/dist/index.js"] }
+   ```
+   No local Bun install needed if you build via Docker instead:
+   ```sh
+   docker run --rm -v "$PWD":/app -w /app oven/bun:1 \
+     sh -c "bun install && bun run typecheck && bun run build"
+   ```
+
+2. **Use a tagged GitHub Release** (see [Releasing](#releasing) below) and
+   fetch the prebuilt asset instead of building at all — e.g. in a setup
+   script, after cloning:
+   ```sh
+   mkdir -p your-fork/dist
+   curl -fsSL -o your-fork/dist/index.js \
+     "https://github.com/<owner>/<repo>/releases/latest/download/<repo-basename>.js"
+   ```
+   Then point `tui.json` at that same `dist/index.js` path. This needs no
+   build tooling at all on the installing machine — only `curl`.
+
 ## Configuration
 
 On first run the plugin creates `~/.config/opencode/usage-bar.toml` with
@@ -161,6 +196,24 @@ bun run typecheck
 
 Publishing: `npm publish` (the `prepublishOnly` script runs the build
 automatically).
+
+## Releasing
+
+`.github/workflows/release.yml` builds and attaches `opencode-usage-bar.js`
++ `.d.ts` to a GitHub Release, but **only runs on a pushed `v*` tag** — it
+does not fire on ordinary pushes to `main` (that's `ci.yml`, typecheck +
+build only, no release). To cut a release:
+
+```sh
+# bump "version" in package.json first, then:
+git tag -a vX.Y.Z -m "vX.Y.Z: <summary>"
+git push origin vX.Y.Z
+```
+
+Consumers (e.g. a setup script, see [Fork, without publishing to
+npm](#fork-without-publishing-to-npm)) fetch the latest build without
+knowing the version, via GitHub's `releases/latest/download/<asset>`
+convenience URL — no `gh` CLI or auth needed for a public repo.
 
 ## Roadmap
 
