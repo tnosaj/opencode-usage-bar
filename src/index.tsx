@@ -166,9 +166,13 @@ type OpencodeAuthEntry = {
   accountId?: string
 }
 
-/** Set from `api.state.path.state` at startup; default matches opencode's
- *  XDG data dir. */
-let opencodeAuthFile = join(homedir(), ".local", "share", "opencode", "auth.json")
+/** opencode keeps auth.json in its XDG *data* dir. `api.state.path.state` is
+ *  the XDG state dir (~/.local/state/opencode), which has no auth.json. */
+const opencodeAuthFile = join(
+  process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
+  "opencode",
+  "auth.json",
+)
 
 /** Read a provider's entry from opencode's own auth store
  *  (`opencode auth login`). Returns null when missing/unreadable. */
@@ -527,7 +531,6 @@ function startMetrics(otel: OtelConfig, latest: () => Record<string, UsageWindow
 
 const tui: TuiPlugin = async (api) => {
   const config = await loadConfig(api.state.path?.config)
-  if (api.state.path?.state) opencodeAuthFile = join(api.state.path.state, "auth.json")
 
   const enabled = providers.filter((p) => config.providers[p.id].enabled)
   if (enabled.length === 0) return // nothing to poll or render
