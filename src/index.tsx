@@ -31,6 +31,9 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { Buffer } from "node:buffer"
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto"
+import { resourceFromAttributes } from "@opentelemetry/resources"
 
 const POLL_MS = 120_000
 const FETCH_TIMEOUT_MS = 10_000
@@ -69,12 +72,20 @@ type ProviderConfig = {
 
 type Placement = "app_bottom" | "sidebar_content" | "sidebar_footer"
 
+type OtelConfig = {
+  /** full OTLP/HTTP metrics URL, e.g. http://host:4318/v1/metrics */
+  endpoint: string
+  exportIntervalMs: number
+}
+
 type UsageBarConfig = {
   showBars: boolean
   showStatus: boolean
   barWidth?: number
   placement: Placement
   providers: Record<ProviderId, ProviderConfig>
+  /** set when [otel] enabled = true with an endpoint */
+  otel?: OtelConfig
 }
 
 type Provider = {
@@ -352,6 +363,11 @@ enabled = false       # ChatGPT Plus/Pro via the Codex CLI login
 show_5h = true
 show_7d = false
 # codex_auth_path = "~/.codex/auth.json"
+
+[otel]
+enabled = false       # export usage windows as OTLP/HTTP (protobuf) gauges
+# endpoint = "http://localhost:4318/v1/metrics"  # full metrics URL
+# export_interval_seconds = 60
 `
 
 function defaultConfig(): UsageBarConfig {
@@ -418,6 +434,17 @@ function parseConfig(raw: string): UsageBarConfig {
     p.credentialsPath = str(t["credentials_path"])
     p.codexAuthPath = str(t["codex_auth_path"])
   }
+
+  const otel = asTable(root["otel"])
+  const endpoint = str(otel["endpoint"])
+  if (bool(otel["enabled"], false) && endpoint) {
+    const secs = otel["export_interval_seconds"]
+    cfg.otel = {
+      endpoint,
+      exportIntervalMs:
+        typeof secs === "number" && Number.isFinite(secs) && secs >= 5 ? secs * 1000 : 60_000,
+    }
+  }
   return cfg
 }
 
@@ -454,6 +481,47 @@ async function loadConfig(configPath: string | undefined): Promise<UsageBarConfi
 }
 
 // ---------------------------------------------------------------------------
+// OTLP export
+// ---------------------------------------------------------------------------
+
+/** Export the latest windows per provider as observable gauges. Export
+ *  failures go to the OTel diag logger (a no-op by default), so the TUI is
+ *  never written to. */
+function startMetrics(otel: OtelConfig, latest: () => Record<string, UsageWindow[]>) {
+  const provider = new MeterProvider({
+    resource: resourceFromAttributes({ "service.name": "opencode-usage-bar" }),
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({ url: otel.endpoint }),
+        exportIntervalMillis: otel.exportIntervalMs,
+      }),
+    ],
+  })
+  const meter = provider.getMeter("opencode-usage-bar")
+  const used = meter.createObservableGauge("opencode.usage_limit.used", {
+    unit: "%",
+    description: "Percent of the subscription usage window consumed",
+  })
+  const resetsAt = meter.createObservableGauge("opencode.usage_limit.resets_at", {
+    unit: "s",
+    description: "Unix time when the usage window resets",
+  })
+  meter.addBatchObservableCallback(
+    (result) => {
+      for (const [id, windows] of Object.entries(latest())) {
+        for (const w of windows) {
+          if (w.resetsAt <= Date.now()) continue
+          const attrs = { provider: id, window: w.category, label: w.label }
+          result.observe(used, w.percent, attrs)
+          result.observe(resetsAt, Math.round(w.resetsAt / 1000), attrs)
+        }
+      }
+    },
+    [used, resetsAt],
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 
@@ -477,6 +545,10 @@ const tui: TuiPlugin = async (api) => {
 
   setInterval(() => setNow(Date.now()), 1_000)
 
+  // Unfiltered by show_* so every window the API returns is exported.
+  const exported: Record<string, UsageWindow[]> = {}
+  if (config.otel) startMetrics(config.otel, () => exported)
+
   for (const p of enabled) {
     const cfg = config.providers[p.id]
     const poll = async () => {
@@ -485,6 +557,7 @@ const tui: TuiPlugin = async (api) => {
       const statusP = config.showStatus && p.statusUrl ? fetchStatus(p.statusUrl) : null
       const [all, status] = await Promise.all([p.fetchUsage(cfg), statusP])
       if (all) {
+        exported[p.id] = all
         const windows = all.filter((w) => cfg.show[w.category] && w.resetsAt > Date.now())
         setByProvider((prev) => ({ ...prev, [p.id]: windows }))
         api.kv.set(`usage-bar.${p.id}.windows`, windows)
