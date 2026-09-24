@@ -153,7 +153,25 @@ enabled = false       # ChatGPT Plus/Pro via the Codex CLI login
 show_5h = true
 show_7d = false
 # codex_auth_path = "~/.codex/auth.json"
+
+[otel]
+enabled = false       # export usage windows as OTLP/HTTP (protobuf) gauges
+# endpoint = "http://localhost:4318/v1/metrics"  # full metrics URL
+# export_interval_seconds = 60
 ```
+
+### `[otel]`
+
+When enabled, every window returned by an enabled provider (regardless of
+`show_*`) is exported with `service.name = "opencode-usage-bar"` and
+attributes `provider`, `window` (`5h` | `7d` | `model`) and `label`:
+
+- `opencode.usage_limit.used` (`%`) — percent of the window consumed
+- `opencode.usage_limit.resets_at` (`s`) — unix time the window resets
+
+In Prometheus (native OTLP receiver) these become
+`opencode_usage_limit_used_percent` and `opencode_usage_limit_resets_at_seconds`.
+Export errors are silent. Values only update while opencode is running.
 
 ### `placement`
 
